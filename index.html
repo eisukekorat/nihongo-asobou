@@ -1535,8 +1535,13 @@ async function playVoiceOrTTS(item){
       const sw=document.getElementById('soundWave');
       sw.classList.add('active');
       audio.onended=()=>{sw.classList.remove('active');URL.revokeObjectURL(url);};
-      audio.onerror=()=>{sw.classList.remove('active');URL.revokeObjectURL(url);};
-      audio.play();
+      audio.onerror=()=>{sw.classList.remove('active');URL.revokeObjectURL(url);speak(item.jp);};
+      audio.play().catch(()=>{
+        // iOS may block autoplay, fallback to TTS
+        sw.classList.remove('active');
+        URL.revokeObjectURL(url);
+        speak(item.jp);
+      });
       return;
     }
   }
@@ -1552,15 +1557,26 @@ function toggleRecMode(){
 async function recordVoice(card,item){
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    const recorder=new MediaRecorder(stream);
+    // Choose supported MIME type (iOS Safari doesn't support webm)
+    let mimeType='audio/webm';
+    if(typeof MediaRecorder.isTypeSupported==='function'){
+      if(MediaRecorder.isTypeSupported('audio/webm')){mimeType='audio/webm';}
+      else if(MediaRecorder.isTypeSupported('audio/mp4')){mimeType='audio/mp4';}
+      else if(MediaRecorder.isTypeSupported('audio/aac')){mimeType='audio/aac';}
+      else if(MediaRecorder.isTypeSupported('audio/ogg')){mimeType='audio/ogg';}
+      else{mimeType='';}// let browser decide
+    }
+    const recOptions=mimeType?{mimeType}:{};
+    const recorder=new MediaRecorder(stream,recOptions);
     const chunks=[];
-    recorder.ondataavailable=(e)=>chunks.push(e.data);
+    recorder.ondataavailable=(e)=>{if(e.data&&e.data.size>0)chunks.push(e.data);};
     // Show countdown
     const overlay=document.createElement('div');
     overlay.className='card-recording-overlay';
     overlay.textContent='3';
     card.appendChild(overlay);
-    recorder.start();
+    // Use timeslice to ensure ondataavailable fires on iOS
+    recorder.start(100);
     let countdown=3;
     const timer=setInterval(()=>{
       countdown--;
@@ -1574,14 +1590,21 @@ async function recordVoice(card,item){
     },3000);
     recorder.onstop=async()=>{
       overlay.remove();
-      const blob=new Blob(chunks,{type:'audio/webm'});
+      if(chunks.length===0){alert('ろくおんできませんでした');return;}
+      const actualType=chunks[0].type||mimeType||'audio/mp4';
+      const blob=new Blob(chunks,{type:actualType});
       const key=currentCat+'_'+item.jp;
       await VoiceDB.save(key,blob);
       voiceKeys.add(key);
       renderCards();// re-render to show badge
+      // Play back immediately so user confirms it worked
+      const url=URL.createObjectURL(blob);
+      const audio=new Audio(url);
+      audio.onended=()=>URL.revokeObjectURL(url);
+      audio.play().catch(()=>{});
     };
   }catch(e){
-    alert('マイクが使えません');
+    alert('マイクが使えません。\nブラウザの設定でマイクを許可してください。');
   }
 }
 
